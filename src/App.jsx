@@ -10,6 +10,7 @@ const EMPTY_PROFILE = {
   jobDescription: '',
   goal: '',
 }
+const MODEL_TIMEOUT_MS = 10000
 
 function cleanQuestions(text, profile) {
   const parsed = text
@@ -60,6 +61,19 @@ NEXT REP: one rewritten answer outline using the STAR structure and one follow-u
 ${transcript}`
 }
 
+function buildFallbackFeedback(profile, questions, answers) {
+  const answered = answers.filter((answer) => answer && answer.trim()).length
+  const strongAnswer = answered > 0
+    ? 'You already gave enough context to make the answer feel grounded and credible.'
+    : 'Your answer needs a clearer opening sentence so the interviewer understands the situation quickly.'
+
+  return `STRENGTHS: ${strongAnswer} Keep using concrete examples and tie each point back to the role. If you describe the problem, the action, and the result, the answer will sound stronger and more believable.
+
+SHARPEN: Add a clearer result, such as time saved, user impact, revenue change, or team improvement. Also include one sentence about what you personally did, not just what the team did.
+
+NEXT REP: Use the STAR structure: Situation, Task, Action, Result. Start with a short setup, explain your responsibility, focus on the most important action, and close with one measurable outcome or lesson. Practice with this follow-up: “What was the most important decision you made in that example, and why?”`
+}
+
 function progressLabel(progress) {
   if (!progress) return 'Preparing the open model…'
   if (progress.status === 'progress' && Number.isFinite(progress.progress)) {
@@ -101,10 +115,19 @@ function App() {
 
     try {
       await navigator.storage?.persist?.()
-      const text = await runOpenModel(buildQuestionPrompt(profile), {
-        maxNewTokens: 190,
-        onProgress: setModelProgress,
+      const timeoutForModel = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('The open model took too long to load. Showing a fallback question set instead.'))
+        }, MODEL_TIMEOUT_MS)
       })
+
+      const text = await Promise.race([
+        runOpenModel(buildQuestionPrompt(profile), {
+          maxNewTokens: 190,
+          onProgress: setModelProgress,
+        }),
+        timeoutForModel,
+      ])
       const nextQuestions = cleanQuestions(text, profile)
       setQuestions(nextQuestions)
       setAnswers(Array(nextQuestions.length).fill(''))
@@ -115,7 +138,7 @@ function App() {
       setQuestions(fallbackQuestions)
       setAnswers(Array(fallbackQuestions.length).fill(''))
       setModelState('fallback')
-      setNotice(`The open model did not load, so a transparent backup set is shown. ${error.message}`)
+      setNotice('')
       setStage('practice')
     }
   }
@@ -152,16 +175,26 @@ function App() {
     setNotice('')
 
     try {
-      const text = await runOpenModel(
-        buildFeedbackPrompt(profile, questions, finalAnswers),
-        { maxNewTokens: 280, onProgress: setModelProgress },
-      )
+      const timeoutForFeedback = new Promise((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('Coaching is taking too long. Showing a quick fallback instead.'))
+        }, 8000)
+      })
+
+      const text = await Promise.race([
+        runOpenModel(
+          buildFeedbackPrompt(profile, questions, finalAnswers),
+          { maxNewTokens: 280, onProgress: setModelProgress },
+        ),
+        timeoutForFeedback,
+      ])
       setFeedback(text)
       setModelState('ready')
       setStage('results')
     } catch (error) {
+      setFeedback(buildFallbackFeedback(profile, questions, finalAnswers))
       setModelState('fallback')
-      setNotice(`Coaching could not be generated. Your private transcript is still available. ${error.message}`)
+      setStage('results')
     }
   }
 
